@@ -23,13 +23,24 @@
 //     SideStore and AltStore installs). The write is guarded so observers
 //     only fire when the value actually changes.
 //
-// IMPORTANT: do NOT implement this with Theos %hook. A %hook build links
+// IMPORTANT (1): do NOT implement this with Theos %hook. A %hook build links
 // /Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate, which does
 // not exist on a jailed device, so LiveContainer fails to dlopen the tweak
 // ("Library not loaded: CydiaSubstrate"). This file therefore uses raw
 // Objective-C runtime swizzling only, which needs no extra framework —
 // the same reason ReturnToLiveContainer loads fine while a %hook build
 // does not.
+//
+// IMPORTANT (2): this tweak's constructor runs during dyld initialization,
+// before main() and before UIKit is ready — TweakLoader loads tweaks from
+// its own constructor. ONLY pure ObjC runtime calls are safe here. An
+// earlier version called UIScreen / appGroupID (SecTask, keychain) /
+// UserDefaults directly from the constructor and crashed LiveContainer on
+// launch. So the constructor below does nothing but the swizzle plus a
+// dispatch_async to the main queue; all settings sync happens later, when
+// UIKit is ready (after launch, and on every icon fetch during rendering).
+// The sync body is additionally wrapped in @try/@catch so it can never
+// kill the host app.
 //
 // Install: put the built dylib in the global Tweaks folder, sign it, then
 // in LiveContainer Settings tap the version number 5 times and enable
@@ -51,31 +62,38 @@ static BOOL AutoDarkIconIsSystemDark(void) {
 }
 
 static void AutoDarkIconSyncSetting(void) {
-    Class cls = objc_getClass("LCSharedUtils");
-    if (!cls) return;
-    NSString *groupID = [cls appGroupID];
-    if (!groupID || [groupID isEqualToString:@"Unknown"]) return;
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:groupID];
-    if (!defaults) return;
-    BOOL dark = AutoDarkIconIsSystemDark();
-    if ([defaults boolForKey:@"darkModeIcon"] != dark) {
-        [defaults setBool:dark forKey:@"darkModeIcon"];
+    // Never let a settings sync kill the host app.
+    @try {
+        Class cls = objc_getClass("LCSharedUtils");
+        if (!cls) return;
+        NSString *groupID = [cls appGroupID];
+        if (!groupID || [groupID isEqualToString:@"Unknown"]) return;
+        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:groupID];
+        if (!defaults) return;
+        BOOL dark = AutoDarkIconIsSystemDark();
+        if ([defaults boolForKey:@"darkModeIcon"] != dark) {
+            [defaults setBool:dark forKey:@"darkModeIcon"];
+        }
+    } @catch (NSException *e) {
     }
 }
 
 static UIImage *AutoDarkIconReplacement(id self, SEL _cmd, BOOL isDarkIcon) {
-    // Ignore the manual setting; follow the live system appearance.
-    // Syncing here too propagates runtime appearance changes to the
-    // @AppStorage-backed views (banner colors included).
+    // Runs during UI rendering, when UIKit is ready. Syncing here too
+    // propagates runtime appearance changes to the @AppStorage-backed
+    // views (banner colors included).
     AutoDarkIconSyncSetting();
     return origIconIsDarkIcon(self, _cmd, AutoDarkIconIsSystemDark());
 }
 
 __attribute__((constructor))
 static void AutoDarkIconInit(void) {
-    // Sync before any view reads the setting, so a fresh launch already
-    // shows dark icons AND dark dynamic colors.
-    AutoDarkIconSyncSetting();
+    // Runs during dyld initialization, before main() and before UIKit is
+    // ready: ONLY pure runtime calls here. The settings sync is deferred
+    // to the main queue (runs after launch) and to every icon fetch.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        AutoDarkIconSyncSetting();
+    });
 
     Class cls = objc_getClass("LCAppInfo");
     if (!cls) return;
