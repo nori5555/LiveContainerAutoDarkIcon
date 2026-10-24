@@ -1,0 +1,9 @@
+Package: com.example.autodarkicon
+Name: Auto Dark Icon for LiveContainer
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Makes LiveContainer guest app icons follow the system appearance automatically: dark icons in dark mode, light icons in light mode, instead of the manual darkModeIcon switch.
+Maintainer: Local build
+Author: Local build
+Section: Tweaks
+Depends: mobilesubstrate
